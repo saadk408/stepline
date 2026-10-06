@@ -4,7 +4,7 @@ Each release raises `version` in `.claude-plugin/plugin.json`. Claude Code offer
 
 ## 1.2.1
 
-- **Permission checks are yours again.** Stepline no longer answers the permission check for its own tools, `mcp__stepline__update_step` and `mcp__stepline__amend_plan`, because Anthropic's plugin directory doesn't allow a plugin to answer allow. Your permission mode and rules decide each call, as for any other tool. To skip the prompt, allow `mcp__stepline__*` in `/permissions`; the README's Troubleshooting section says how.
+- **Stepline no longer answers its own tools' permission checks.** Anthropic's plugin directory doesn't allow a plugin to answer allow, so the hooks that approved `mcp__stepline__update_step` and `mcp__stepline__amend_plan` are gone. Claude Code decides those calls itself, and it runs a plugin's own registered tools without asking, so check-offs still need no prompt.
 - **Ready for the directory's scan.** The helper that writes a step change no longer takes the engine interface, which the directory's reader couldn't follow there. Nothing changes in what the plugin does.
 
 ## 1.2.0
