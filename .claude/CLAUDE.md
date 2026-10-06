@@ -56,6 +56,12 @@ tsc -p .                            # type-check, once .claude-plugin/types/ exi
   - `tool.check` has no `.catch`, since it only approves its own tool.
 - The observe-only `turn.start` is used instead of `prompt.submit` on purpose: the mod must not be able to change a prompt.
 
+## Gotchas
+
+- Keep this file at `.claude/CLAUDE.md`. The repo root is the plugin root, and a `CLAUDE.md` there fails `validate --strict` and CI. Check `validate`'s exit status before pushing; piping it into `tail` hides a failure.
+- A session that loads this checkout (`--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`) reloads it at the end of each turn that edits it. Renaming the tool or the command breaks that session's own use of the old names.
+- `mark()` applies any mirrored status, `pending` included. A fresh TodoWrite list whose items match finished steps un-checks them. Known and unfixed.
+
 ## Tests
 
 `tests/stepline.test.ts` runs the module against a stand-in engine.
@@ -64,6 +70,7 @@ tsc -p .                            # type-check, once .claude-plugin/types/ exi
 - **`start($)`** begins a session in `/repo`.
 - **`band()` and `pane()`** mount the UI so tests can `find` text in it.
 - Inline plugins such as `neighbor` and `watcher` are passed through `test(name, { plugins: [...] }, body)`.
+- Tests raise events through `$` as the engine would: `$.tool.call({ tool: 'ExitPlanMode' })`, `$.command.run({ command: 'stepline', args, ...COMMAND })`, `$.turn.start({ text, turnId })`.
 
 ## Publishing constraints
 
@@ -71,6 +78,7 @@ The repo is prepared for Anthropic's plugin directory, which follows `main`.
 
 - **Releases:** every merge to `main` that changes what users get raises `version` in `.claude-plugin/plugin.json` and adds a `CHANGELOG.md` entry; Claude Code offers updates only when the version changes. Changes for development only, such as this file or CI, don't need a version bump.
 - **The plugin `name`, `stepline`, is permanent.** Change `displayName` for a different label.
+- **`validate` checks only that the files are well-formed.** The directory's own rules (README length, license, name, file limits, security scan) run in the portal's **Validate** at claude.ai/directory/manage.
 - **Disclosures:**
   - The README's "Data and permissions" section names every hook and `$` call that `validate` prints, and quotes `announce()`, the `update_step` description and the command replies verbatim.
   - Any change to hooks, `$` calls, stored fields or model-facing strings must update the README to match, and `PRIVACY.md` and the scope list in `SECURITY.md` where they're affected.
