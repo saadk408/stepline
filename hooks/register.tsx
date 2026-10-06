@@ -251,7 +251,7 @@ export const register: Register = on => {
     await syncPane($)
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   // The approval: split the plan, track it, and hand the model its steps.
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {

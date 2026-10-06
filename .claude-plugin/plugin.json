@@ -1,5 +1,7 @@
 {
   "name": "plan-progress",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "description": "Turns the plan you approve in plan mode into a live checklist above the prompt, checked off as Claude works.",
+  "author": { "name": "Saad Khan" },
   "types": "./types/index.d.ts"
 }

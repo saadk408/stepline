@@ -54,6 +54,7 @@ function world(
     store?: Record<string, unknown>
     isRejected?: boolean
     isModelDenied?: boolean
+    isStoreBroken?: boolean
   } = {}
 ): World {
   const seen: World = {
@@ -64,7 +65,10 @@ function world(
     openedWith: [],
     closed: [],
   }
-  on('store.get', ($, e) => ({ value: seen.store.get(e.key) }))
+  on('store.get', ($, e) => {
+    if (options.isStoreBroken === true) throw new Error('the store could not be read')
+    return { value: seen.store.get(e.key) }
+  })
   on('store.set', ($, e) => ({ value: void seen.store.set(e.key, e.value) }))
   on('store.delete', ($, e) => ({ value: void seen.store.delete(e.key) }))
   on('store.keys', () => ({ value: [...seen.store.keys()] }))
@@ -385,6 +389,24 @@ const neighbor: Plugin = {
   },
 }
 
+/**
+ * A mod above this one that reads how its SessionStart hook settled. It runs
+ * apart from the test, names nothing from this file, and hands what it read
+ * over through the store, under `watcher:outcomes`.
+ */
+const watcher: Plugin = {
+  name: 'outcome-watcher',
+  tier: 'prepend',
+  register(on) {
+    on('classic.SessionStart', async ($, e, next) => {
+      const result = await next(e)
+      const links = next.trace.filter(link => link.plugin === 'plan-progress')
+      await $.store.set('watcher:outcomes', links.map(link => link.outcome))
+      return result
+    })
+  },
+}
+
 function toolRow(
   $: Engine,
   surface: 'terminal' | 'desktop',
@@ -651,6 +673,16 @@ describe('across sessions', () => {
 
     const shown = await $.command.run({ command: 'plan-progress', args: '', ...COMMAND })
     expect(shown.context?.[0]).toContain('2. [ ] Add the GET /health endpoint')
+  })
+
+  test('a store that fails at /clear leaves the session start to Claude Code', { plugins: [watcher] }, async ($, on) => {
+    const seen = world(on, { isStoreBroken: true })
+
+    const started = await $.classic.SessionStart({ source: 'clear' })
+
+    expect(started).toEqual({})
+    // The hook's .catch answered in its place, rather than the engine skipping it.
+    expect(seen.store.get('watcher:outcomes')).toEqual(['caught'])
   })
 
   test('a step another session checked off is kept', async ($, on) => {
