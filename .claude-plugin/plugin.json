@@ -10,7 +10,7 @@
   "homepage": "https://github.com/saadk408/stepline",
   "repository": "https://github.com/saadk408/stepline",
   "license": "MIT",
-  "keywords": ["plan-mode", "checklist", "progress", "tasks"],
+  "keywords": ["claude-code-mod", "plan-mode", "checklist", "progress", "tasks"],
   "icon": "./assets/icon.svg",
   "documentationUrl": "https://github.com/saadk408/stepline#readme",
   "supportUrl": "https://github.com/saadk408/stepline/issues",
