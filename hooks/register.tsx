@@ -6,15 +6,15 @@ import type { Plan, PlanStep, StepStatus } from '../types'
 import { parsePlan, parseSplit, readUpdateResult, SPLIT_SYSTEM, splitPrompt, stepFor, updateResult } from './plan'
 import type { Split } from './plan'
 
-const PANE = 'plan-progress'
+const PANE = 'stepline'
 const PANE_TITLE = 'Plan'
 const TOOL = 'update_step'
-const TOOL_NAME = 'mcp__plan-progress__update_step'
+const TOOL_NAME = 'mcp__stepline__update_step'
 const MAX_STEPS = 20
 
-const planAtom = atom({ plugin: 'plan-progress', key: 'plan' } as const, null as Plan | null)
-const paneOpenAtom = atom({ plugin: 'plan-progress', key: 'isPaneOpen' } as const, false)
-const doneSeenAtom = atom({ plugin: 'plan-progress', key: 'isDoneSeen' } as const, false)
+const planAtom = atom({ plugin: 'stepline', key: 'plan' } as const, null as Plan | null)
+const paneOpenAtom = atom({ plugin: 'stepline', key: 'isPaneOpen' } as const, false)
+const doneSeenAtom = atom({ plugin: 'stepline', key: 'isDoneSeen' } as const, false)
 /** Cells for the band's label column: PLAN, Now, Next. */
 const LABEL_WIDTH = 6
 /** The band's card stops growing here, so on a wide terminal the bar stays near the title. */
@@ -92,7 +92,7 @@ function checklist(plan: Plan): string {
 
 function announce(plan: Plan): string {
   return [
-    `plan-progress is tracking the approved plan "${plan.title}" as a checklist the person watches above the prompt:`,
+    `Stepline is tracking the approved plan "${plan.title}" as a checklist the person watches above the prompt:`,
     checklist(plan),
     '',
     `Work through the steps in order. Call ${TOOL_NAME} with {"step": N, "status": "completed"} as soon as step N is done ("skipped" if the person drops it). The person's view treats the first unfinished step as the one in progress, so call it with "in_progress" only when you start a step out of order. If you also keep a TodoWrite or Task list, use these step titles verbatim.`,
@@ -125,13 +125,13 @@ async function restorePlan(
   const stored = await storedPlan($, await $.session.root())
   if (stored === null) return held
   // After /clear the model no longer holds the checklist, so the next
-  // /plan-progress hands it over again.
+  // /stepline hands it over again.
   return update($, planAtom, () => (reset === 'clear' ? { ...stored, knownBy: '' } : stored))
 }
 
 /**
  * Opens the full checklist, which hides the band while it's up. Only the
- * person opens it, from the band or /plan-progress, so it's placed at any width.
+ * person opens it, from the band or /stepline, so it's placed at any width.
  * It takes the keyboard where it can, and Escape closes it: ctrl+x x only
  * reaches a pane that already holds the keys.
  */
@@ -218,14 +218,14 @@ async function mark($: EngineInterface, changes: readonly Change[]): Promise<Pla
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'plan-progress',
+      name: 'stepline',
       description: 'Show or hide the approved plan’s full checklist (clear stops tracking it)',
       argumentHint: '[clear]',
     })
     await $.tool.register({
       name: TOOL,
       description:
-        'Updates the checklist of the approved plan that the person watches above the prompt and in the plan-progress pane. Call it with status "completed" as soon as a step is done, or "skipped" for a step the person drops. The first unfinished step counts as in progress, so use "in_progress" only when you start a step out of order. Steps are numbered as in the checklist plan-progress gave you when the plan was approved.',
+        'Updates the checklist of the approved plan that the person watches above the prompt and in the Stepline pane. Call it with status "completed" as soon as a step is done, or "skipped" for a step the person drops. The first unfinished step counts as in progress, so use "in_progress" only when you start a step out of order. Steps are numbered as in the checklist Stepline gave you when the plan was approved.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -307,13 +307,13 @@ export const register: Register = on => {
     const after = (await mark($, [{ n: step, status }])) ?? plan
     const title = after.steps.find(one => one.n === step)?.title ?? ''
     return { result: updateResult(step, status, title, progressLine(after)) }
-  }).catch(() => ({ result: 'plan-progress could not update the checklist.', isError: true }))
+  }).catch(() => ({ result: 'Stepline could not update the checklist.', isError: true }))
 
   // Its own tool updates nothing but its checklist: no prompt for it, and its
   // schema stays in the tool list so the model needs no ToolSearch first.
   on('tool.check', { tool: TOOL_NAME }, () => ({
     decision: 'allow',
-    reason: 'plan-progress only updates its own checklist',
+    reason: 'Stepline only updates its own checklist',
   }))
   on('tool.describe', { tool: TOOL_NAME }, async ($, e, next) => ({
     ...(await next(e)),
@@ -357,7 +357,7 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
-  on('command.run', { command: 'plan-progress' }, async ($, e) => {
+  on('command.run', { command: 'stepline' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       const plan = await read($, planAtom)
       if (plan === null) return { text: 'No plan was being tracked.' }
@@ -401,18 +401,19 @@ export const register: Register = on => {
     return closed
   }).catch(($, e, next) => next(e))
 
-  // The first prompt after the plan's finish quiets the band.
-  on('prompt.submit', async ($, e, next) => {
+  // The first turn after the plan's finish quiets the band. turn.start only
+  // observes: the mod never sees a prompt it could change.
+  on('turn.start', async ($, e, next) => {
     const plan = await read($, planAtom)
     if (plan !== null && isDone(plan)) await update($, doneSeenAtom, () => true)
     return next(e)
-  }).catch(($, e, next) => next(e))
+  })
 
   // The band above the prompt: progress at a glance, the full list a press away.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const plan = await read($, planAtom)
     if (plan === null || e.props.hasSurvey || (await read($, paneOpenAtom))) return next(e)
-    // A plan this session's model hasn't been given waits for /plan-progress.
+    // A plan this session's model hasn't been given waits for /stepline.
     const isKnown = plan.knownBy === (await $.session.id())
     const step = currentStep(plan)
     if (step === undefined && (!isKnown || (await read($, doneSeenAtom)))) return next(e)
@@ -454,7 +455,7 @@ export const register: Register = on => {
           {planLabel}
           <Box flexShrink={1}>
             <Text dimColor wrap="truncate-end">
-              {`Unfinished: "${plan.title}" ${count} · /plan-progress to resume`}
+              {`Unfinished: "${plan.title}" ${count} · /stepline to resume`}
             </Text>
           </Box>
         </Box>
@@ -559,7 +560,7 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Text dimColor>No plan yet. Approve a plan in plan mode and its steps show up here.</Text>
           <Box marginTop={1}>
-            <Text dimColor>Esc or /plan-progress closes this</Text>
+            <Text dimColor>Esc or /stepline closes this</Text>
           </Box>
         </Box>
       )
@@ -608,7 +609,7 @@ export const register: Register = on => {
           <Text dimColor>(split from the plan's own list: the model call failed)</Text>
         )}
         <Box marginTop={1}>
-          <Text dimColor>Esc or /plan-progress closes this</Text>
+          <Text dimColor>Esc or /stepline closes this</Text>
         </Box>
       </Box>
     )

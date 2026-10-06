@@ -18,7 +18,7 @@ export type Plan = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'plan-progress': {
+    stepline: {
       plan: Plan | null
       /** Whether the checklist pane is open, which hides the band. */
       isPaneOpen: boolean
@@ -29,6 +29,6 @@ declare module 'claude-code' {
 
   /** The input of the tool the mod registers, so `e.tool` narrows to it. */
   interface McpToolInputs {
-    'mcp__plan-progress__update_step': { step: number; status: StepStatus }
+    'mcp__stepline__update_step': { step: number; status: StepStatus }
   }
 }

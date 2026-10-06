@@ -28,7 +28,7 @@ const USAGE = {
   cache_creation_input_tokens: 0,
 }
 
-const UPDATE = 'mcp__plan-progress__update_step'
+const UPDATE = 'mcp__stepline__update_step'
 const KEY = 'plan:/repo'
 const COMMAND = {
   origin: { kind: 'composer' },
@@ -76,7 +76,7 @@ function world(
   on('classic.SessionStart', () => ({}))
   on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: options.sessionId ?? 'session-a' }))
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__plan-progress__${e.name}` } }))
+  on('tool.register', ($, e) => ({ value: { tool: `mcp__stepline__${e.name}` } }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.toast', ($, e) => ({ value: void seen.toasts.push(e.text) }))
   on('ui.status', ($, e) => ({ value: void seen.statuses.push(e.text) }))
@@ -87,7 +87,7 @@ function world(
   })
   on('ui.close', ($, e) => ({ value: void seen.closed.push(e.id) }))
   on('ui.panes', () => ({ value: [] }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   // Stand for Claude Code's own tool rows.
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
   on('ui.render', { component: 'ToolResult' }, () => ({ type: 'Text', props: {}, children: ['engine result'] }))
@@ -124,10 +124,10 @@ const saved = (seen: World) => seen.store.get(KEY) as Plan | undefined
 
 function pane($: Engine, surface: 'terminal' | 'desktop', rows = 40) {
   return $.ui.mount({
-    plugin: 'plan-progress',
+    plugin: 'stepline',
     surface,
     component: 'Pane',
-    requestId: 'plan-progress',
+    requestId: 'stepline',
     viewport: { columns: 120, rows },
     props: {
       title: 'Plan',
@@ -142,7 +142,7 @@ function pane($: Engine, surface: 'terminal' | 'desktop', rows = 40) {
 
 function band($: Engine, surface: 'terminal' | 'desktop', hasSurvey = false, bodyColumns = 70) {
   return $.ui.mount({
-    plugin: 'plan-progress',
+    plugin: 'stepline',
     surface,
     component: 'AbovePrompt',
     props: {
@@ -314,7 +314,7 @@ describe('what the README discloses', () => {
     const described = await $.tool.describe({
       tool: UPDATE,
       description: 'Updates the checklist',
-      provider: { plugin: 'plan-progress', tier: 'user' },
+      provider: { plugin: 'stepline', tier: 'user' },
     })
 
     expect(described).toEqual({ description: 'Updates the checklist', isDeferred: false })
@@ -337,7 +337,7 @@ describe('the pane', () => {
       expect(current?.props.bold).toBe(true)
       const done = await ui.find({ type: 'Text', text: '1. Add the HealthSerializer' })
       expect(done?.props.dimColor).toBe(true)
-      expect(await ui.find({ type: 'Text', text: 'Esc or /plan-progress closes this' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Esc or /stepline closes this' })).toBeDefined()
       await ui.unmount()
     }
   })
@@ -400,7 +400,7 @@ const watcher: Plugin = {
   register(on) {
     on('classic.SessionStart', async ($, e, next) => {
       const result = await next(e)
-      const links = next.trace.filter(link => link.plugin === 'plan-progress')
+      const links = next.trace.filter(link => link.plugin === 'stepline')
       await $.store.set('watcher:outcomes', links.map(link => link.outcome))
       return result
     })
@@ -413,7 +413,7 @@ function toolRow(
   props: { tool?: string; input?: unknown; output?: unknown; isErrored?: boolean; isInterrupted?: boolean }
 ) {
   return $.ui.mount({
-    plugin: 'plan-progress',
+    plugin: 'stepline',
     surface,
     component: 'ToolUse',
     requestId: 'call-1',
@@ -474,7 +474,7 @@ describe('the transcript', () => {
     world(on)
     const result = (tool: string, isErrored: boolean) =>
       $.ui.mount({
-        plugin: 'plan-progress',
+        plugin: 'stepline',
         surface: 'terminal',
         component: 'ToolResult',
         requestId: 'call-1',
@@ -561,13 +561,13 @@ describe('the band', () => {
 
     await ui.press({ key: 'all-steps' })
 
-    expect(seen.opened).toEqual(['plan-progress'])
+    expect(seen.opened).toEqual(['stepline'])
     expect(seen.openedWith[0]).toMatchObject({ focus: true, closeOnEscape: true })
     expect(await ui.find({ type: 'Text', text: 'Health check endpoint' })).toBeUndefined()
     await ui.unmount()
 
     // The mod closes its own pane on clear; the next plan is in the band again.
-    await $.command.run({ command: 'plan-progress', args: 'clear', ...COMMAND })
+    await $.command.run({ command: 'stepline', args: 'clear', ...COMMAND })
     await $.tool.call({ tool: 'ExitPlanMode' })
 
     const after = await band($, 'terminal')
@@ -585,7 +585,7 @@ describe('the band', () => {
     expect(await ui.find({ type: 'Text', text: '✔ Health check endpoint: all 3 steps done' })).toBeDefined()
     await ui.unmount()
 
-    await $.prompt.submit({ text: 'Thanks!', wait: false, origin: { kind: 'composer' } })
+    await $.turn.start({ text: 'Thanks!', turnId: 'turn-1' })
 
     const after = await band($, 'terminal')
     expect(await after.find({ type: 'Text', text: /all 3 steps done/ })).toBeUndefined()
@@ -608,24 +608,24 @@ describe('across sessions', () => {
     taskIds: {},
   }
 
-  test('a new session in the repo picks the plan back up and /plan-progress hands it to the model', async ($, on) => {
+  test('a new session in the repo picks the plan back up and /stepline hands it to the model', async ($, on) => {
     const seen = world(on, { sessionId: 'session-new', store: { 'plan:/repo': stored } })
     await start($)
 
     expect(saved(seen)?.title).toBe('Health check endpoint')
     expect(seen.opened).toEqual([])
 
-    const shown = await $.command.run({ command: 'plan-progress', args: '', ...COMMAND })
-    expect(seen.opened).toEqual(['plan-progress'])
+    const shown = await $.command.run({ command: 'stepline', args: '', ...COMMAND })
+    expect(seen.opened).toEqual(['stepline'])
     expect(shown.text).toContain('1/2 steps done')
     expect(shown.context?.[0]).toContain('2. [ ] Add the GET /health endpoint')
 
-    const closed = await $.command.run({ command: 'plan-progress', args: '', ...COMMAND })
+    const closed = await $.command.run({ command: 'stepline', args: '', ...COMMAND })
     expect(closed.text).toBe('Closed the checklist.')
-    expect(seen.closed).toEqual(['plan-progress'])
+    expect(seen.closed).toEqual(['stepline'])
 
-    const again = await $.command.run({ command: 'plan-progress', args: '', ...COMMAND })
-    expect(seen.opened).toEqual(['plan-progress', 'plan-progress'])
+    const again = await $.command.run({ command: 'stepline', args: '', ...COMMAND })
+    expect(seen.opened).toEqual(['stepline', 'stepline'])
     expect(again.context ?? []).toEqual([])
   })
 
@@ -637,18 +637,18 @@ describe('across sessions', () => {
     expect(
       await ui.find({
         type: 'Text',
-        text: 'Unfinished: "Health check endpoint" 1/2 · /plan-progress to resume',
+        text: 'Unfinished: "Health check endpoint" 1/2 · /stepline to resume',
       })
     ).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'all-steps' })).toBeUndefined()
     await ui.unmount()
   })
 
-  test('/plan-progress clear stops tracking it', async ($, on) => {
+  test('/stepline clear stops tracking it', async ($, on) => {
     const seen = world(on, { store: { 'plan:/repo': stored } })
     await start($)
 
-    await $.command.run({ command: 'plan-progress', args: 'clear', ...COMMAND })
+    await $.command.run({ command: 'stepline', args: 'clear', ...COMMAND })
 
     expect(saved(seen)).toBeUndefined()
     const ui = await band($, 'terminal')
@@ -656,7 +656,7 @@ describe('across sessions', () => {
     await ui.unmount()
   })
 
-  test('/clear brings the plan back and /plan-progress hands it to the model again', async ($, on) => {
+  test('/clear brings the plan back and /stepline hands it to the model again', async ($, on) => {
     // The same session that was told the steps before its context was cleared.
     world(on, { sessionId: 'session-old', store: { 'plan:/repo': stored } })
 
@@ -671,7 +671,7 @@ describe('across sessions', () => {
     expect(await ui.find({ type: 'Text', text: '2. Add the GET /health endpoint' })).toBeDefined()
     await ui.unmount()
 
-    const shown = await $.command.run({ command: 'plan-progress', args: '', ...COMMAND })
+    const shown = await $.command.run({ command: 'stepline', args: '', ...COMMAND })
     expect(shown.context?.[0]).toContain('2. [ ] Add the GET /health endpoint')
   })
 
@@ -717,7 +717,7 @@ describe('across sessions', () => {
     expect(await ui.find({ type: 'Text', text: ' 1/3' })).toBeDefined()
     await ui.unmount()
 
-    await $.command.run({ command: 'plan-progress', args: 'clear', ...COMMAND })
+    await $.command.run({ command: 'stepline', args: 'clear', ...COMMAND })
 
     expect(saved(seen)).toEqual(newer)
   })

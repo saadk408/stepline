@@ -2,6 +2,15 @@
 
 Each release raises `version` in `.claude-plugin/plugin.json`. Claude Code offers an update only when that number changes.
 
+## 1.1.0
+
+- **Renamed to Stepline.** The plugin is now `stepline`, shown as Stepline, and the repository is `saadk408/stepline`. If you installed `plan-progress@saadk408`, run `/plugin uninstall plan-progress@saadk408`, then `/plugin marketplace update saadk408` and `/plugin install stepline@saadk408`. A plan saved under the old name doesn't carry over, so approve it again to track it. A clone loaded through `CLAUDE_CODE_PLUGIN_DIRS` keeps working from its folder.
+- **A new command and tool name.** `/stepline` opens or closes the pane and hands the checklist back to Claude in a new session, and `/stepline clear` stops tracking. Claude checks steps off with `mcp__stepline__update_step`.
+- **Fields for Anthropic's plugin directory.** `.claude-plugin/plugin.json` points at an icon, `assets/icon.svg`, and at the README, the issue tracker and `PRIVACY.md` for documentation, support and privacy. The directory reads these fields. Claude Code ignores them.
+- **`PRIVACY.md` and `SECURITY.md`.** `PRIVACY.md` says what the plugin processes, what it stores, where, and for how long. `SECURITY.md` says how to report a vulnerability privately.
+- **A fuller README.** An Examples section has prompts to try, and a Support section links to issues, `SECURITY.md` and `PRIVACY.md`. Data and permissions now lists all that `claude plugin validate` reports: the tool calls the plugin reads, the turns it's told about, the tool schema it keeps loaded, and the exact text it adds to Claude's context.
+- **The band goes quiet on `turn.start`.** The band still goes quiet at the first turn after a plan is done. The plugin learns of that turn from `turn.start`, an event it can only observe, and ignores the prompt's text. It no longer hooks `prompt.submit`, so it can't change a prompt.
+
 ## 1.0.1
 
 - **A sturdier start after `/clear`, `/resume` and `/branch`.** When the saved plan can't be read there, the hook that restores it hands the session start back to Claude Code, like every other hook in the plugin, instead of being skipped as a failure.

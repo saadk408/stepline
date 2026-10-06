@@ -1,15 +1,19 @@
 {
-  "name": "plan-progress",
-  "displayName": "Plan Progress",
-  "version": "1.0.1",
+  "name": "stepline",
+  "displayName": "Stepline",
+  "version": "1.1.0",
   "description": "Turns a plan you approve in plan mode into a live checklist above the prompt that checks off each step as Claude completes it",
   "author": {
     "name": "Saad Khan",
     "url": "https://github.com/saadk408"
   },
-  "homepage": "https://github.com/saadk408/plan-progress",
-  "repository": "https://github.com/saadk408/plan-progress",
+  "homepage": "https://github.com/saadk408/stepline",
+  "repository": "https://github.com/saadk408/stepline",
   "license": "MIT",
   "keywords": ["plan-mode", "checklist", "progress", "tasks"],
+  "icon": "./assets/icon.svg",
+  "documentationUrl": "https://github.com/saadk408/stepline#readme",
+  "supportUrl": "https://github.com/saadk408/stepline/issues",
+  "privacyPolicyUrl": "https://github.com/saadk408/stepline/blob/main/PRIVACY.md",
   "types": "./types/index.d.ts"
 }

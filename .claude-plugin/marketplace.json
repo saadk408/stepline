@@ -7,7 +7,7 @@
   },
   "plugins": [
     {
-      "name": "plan-progress",
+      "name": "stepline",
       "source": "./",
       "description": "Turns a plan you approve in plan mode into a live checklist above the prompt that checks off each step as Claude completes it",
       "category": "productivity"
