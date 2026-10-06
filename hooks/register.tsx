@@ -13,7 +13,7 @@ import {
   mergeSteps,
   parsePlan,
   parseSplit,
-  readUpdateResult,
+  planLine,
   SPLIT_SYSTEM,
   splitPrompt,
   stepFor,
@@ -237,6 +237,14 @@ const noStep = (plan: Plan, step: unknown) =>
     isError: true,
   }) as const
 const NOT_CHANGED = { result: 'Stepline could not change the checklist.', isError: true } as const
+/**
+ * The main agent owns the plan: a subagent's task is one of its steps, and
+ * what the subagent finds reaches the plan through the main agent's report.
+ */
+const NOT_MAIN = {
+  result: 'Only the main conversation changes the checklist: a subagent’s call does nothing.',
+  isError: true,
+} as const
 
 /**
  * Writes a change to the plan's steps under its approval, made on the latest
@@ -393,6 +401,7 @@ export const register: Register = on => {
 
   // The tool the model checks steps off with.
   on('tool.call', { tool: TOOL_NAME }, async ($, e) => {
+    if (e.agentId !== undefined) return NOT_MAIN
     // The schema is the model's to follow, so the values are checked anyway.
     const { step, status }: { step: unknown; status: unknown } = e
     const found = await currentPlan($)
@@ -426,6 +435,7 @@ export const register: Register = on => {
   // The tool the model changes the checklist with: a step added, one
   // retitled, or a few words on work off the plan.
   on('tool.call', { tool: AMEND_NAME }, async ($, e) => {
+    if (e.agentId !== undefined) return NOT_MAIN
     const { action, step, title }: { action: unknown; step?: unknown; title?: unknown } = e
     if (!isAction(action)) return { result: `action must be one of ${ACTIONS.join(', ')}.`, isError: true }
     const found = await currentPlan($)
@@ -437,10 +447,6 @@ export const register: Register = on => {
     const text = typeof title === 'string' ? cleanTitle(title) : ''
 
     if (action === 'aside') {
-      // The band is the main conversation's, so a subagent's aside shows nowhere.
-      if (e.agentId !== undefined) {
-        return { result: 'An aside shows only for the main conversation, so none was noted.' }
-      }
       await update($, asideAtom, () => (text === '' ? null : { text, source: 'tool' }))
       return { result: text === '' ? 'Aside cleared.' : `Aside noted: ${text}.` }
     }
@@ -490,25 +496,24 @@ export const register: Register = on => {
     isDeferred: false,
   }))
 
-  // Mirrors of the model's own task lists, matched to steps by title.
+  // Mirrors of the main conversation's own task lists, matched to steps by
+  // title. A subagent's lists are its own, as the plan is the main agent's.
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const ran = await next(e)
     const plan = await read($, planAtom)
-    if (plan === null || ran.deny !== undefined || ran.isError === true) return ran
+    if (plan === null || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
     const matched = e.todos.map(todo => ({ todo, step: stepFor(plan, todo.content) }))
     await mark($, matched.flatMap(({ todo, step }) => (step ? [{ n: step.n, status: todo.status }] : [])))
     // An item under way that is no step is what the model is doing off the plan.
-    if (e.agentId === undefined) {
-      const off = matched.find(({ todo, step }) => step === undefined && todo.status === 'in_progress')
-      await update($, asideAtom, aside => todoAside(aside, off && cleanTitle(off.todo.content)))
-    }
+    const off = matched.find(({ todo, step }) => step === undefined && todo.status === 'in_progress')
+    await update($, asideAtom, aside => todoAside(aside, off && cleanTitle(off.todo.content)))
     return ran
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
     const ran = await next(e)
     const plan = (await currentPlan($))?.plan ?? null
-    if (plan === null || ran.deny !== undefined || ran.isError === true) return ran
+    if (plan === null || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
     const step = stepFor(plan, e.subject)
     const id = ran.result.task.id
     if (step !== undefined) {
@@ -520,7 +525,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
     const ran = await next(e)
     const plan = await read($, planAtom)
-    if (plan === null || ran.deny !== undefined || ran.isError === true) return ran
+    if (plan === null || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
     const n =
       plan.taskIds[e.taskId] ?? (e.subject === undefined ? undefined : stepFor(plan, e.subject)?.n)
     if (n !== undefined && isStatus(e.status)) await mark($, [{ n, status: e.status }])
@@ -711,8 +716,7 @@ export const register: Register = on => {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)
-    const parsed = typeof e.props.output === 'string' ? readUpdateResult(e.props.output) : undefined
-    const line = parsed === undefined ? `plan · step ${step}` : `plan ${parsed.count} · ${parsed.title}`
+    const line = planLine(e.props.output, `plan · step ${step}`)
     return (
       <Box flexDirection="row">
         <Text color={ICON_COLOR[status]}>{`${ICON[status]} `}</Text>
@@ -739,10 +743,9 @@ export const register: Register = on => {
     if (e.props.isErrored || e.props.isInterrupted || !isAction(action)) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const text = typeof title === 'string' ? cleanTitle(title) : ''
-    const parsed = typeof e.props.output === 'string' ? readUpdateResult(e.props.output) : undefined
     let line
     if (action === 'aside') line = text === '' ? 'back to the steps' : text
-    else line = parsed === undefined ? `plan · ${text}` : `plan ${parsed.count} · ${parsed.title}`
+    else line = planLine(e.props.output, `plan · ${text}`)
     return (
       <Box flexDirection="row">
         <Text color={action === 'aside' ? 'subtle' : 'planMode'}>{`${AMEND_ICON[action]} `}</Text>

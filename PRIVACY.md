@@ -12,7 +12,7 @@ What happens to the model call and your conversation once they reach your provid
 ## What Stepline reads
 
 - **The plan you approve.** Stepline reads the plan's text from the approval. When the approval doesn't carry the text, it reads the plan file Claude Code saved for it. It ignores plans approved inside a subagent.
-- **Claude's task lists.** When Claude calls TodoWrite, TaskCreate, or TaskUpdate, Stepline reads each item's title and status, and each task's id, so that items titled like a step check that step off, and an item in progress that matches no step shows in the band as what Claude is doing off the plan. It doesn't change those calls or their results.
+- **Claude's task lists.** When Claude calls TodoWrite, TaskCreate, or TaskUpdate, Stepline reads each item's title and status, and each task's id, so that items titled like a step check that step off, and an item in progress that matches no step shows in the band as what Claude is doing off the plan. It doesn't change those calls or their results, and it leaves a subagent's lists alone.
 - **Your project and session.** Stepline reads the project's path, to keep one plan per project, and the session's id, to know which session's Claude has the checklist.
 - **When each turn starts.** Stepline is told when each turn starts, so the band can go quiet after a finished plan and drop the aside. The event carries your prompt, but Stepline ignores its text, and it can't change it.
 

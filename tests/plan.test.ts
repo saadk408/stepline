@@ -7,6 +7,7 @@ import {
   mergeSteps,
   parsePlan,
   parseSplit,
+  planLine,
   readUpdateResult,
   stepFor,
   todoAside,
@@ -136,6 +137,13 @@ describe('updateResult and readUpdateResult, the text a transcript row reads bac
 
   test('read nothing from text they did not write', () => {
     expect(readUpdateResult('No approved plan is being tracked.')).toBeUndefined()
+  })
+
+  test('planLine draws the row from the result, or falls back for text they did not write', () => {
+    const done = 'Step 2 is completed: Add the endpoint. 2/5 done. Next open step: 3. Write tests'
+    expect(planLine(done, 'plan · step 2')).toBe('plan 2/5 · Add the endpoint')
+    expect(planLine('No approved plan is being tracked.', 'plan · step 2')).toBe('plan · step 2')
+    expect(planLine(undefined, 'plan · step 2')).toBe('plan · step 2')
   })
 })
 

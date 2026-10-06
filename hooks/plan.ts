@@ -111,6 +111,12 @@ export function readUpdateResult(text: string): { title: string; count: string }
   return match ? { title: match[1] ?? '', count: match[2] ?? '' } : undefined
 }
 
+/** A transcript row's text for a tool's result: its count and title, else the fallback. */
+export function planLine(output: unknown, fallback: string): string {
+  const parsed = typeof output === 'string' ? readUpdateResult(output) : undefined
+  return parsed === undefined ? fallback : `plan ${parsed.count} · ${parsed.title}`
+}
+
 // Steps and their statuses
 
 export const isClosed = (status: StepStatus) => status === 'completed' || status === 'skipped'
