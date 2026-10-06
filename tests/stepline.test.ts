@@ -297,14 +297,16 @@ describe('checking steps off', () => {
 })
 
 describe('what the README discloses', () => {
-  test('approves its own tool and leaves every other tool to the usual check', async ($, on) => {
+  test('leaves its own tools, like every other, to the session’s permission rules', async ($, on) => {
     world(on)
     on('tool.check', () => ({ decision: 'ask', reason: 'the session’s rules' }))
 
     const own = await $.tool.check({ tool: UPDATE, input: { step: 1, status: 'completed' } })
+    const amend = await $.tool.check({ tool: AMEND, input: { action: 'add', title: 'x' } })
     const other = await $.tool.check({ tool: 'Bash', input: { command: 'rm -rf build' } })
 
-    expect(own.decision).toBe('allow')
+    expect(own).toEqual({ decision: 'ask', reason: 'the session’s rules' })
+    expect(amend).toEqual({ decision: 'ask', reason: 'the session’s rules' })
     expect(other).toEqual({ decision: 'ask', reason: 'the session’s rules' })
   })
 
@@ -978,14 +980,12 @@ describe('changing the plan as the work drifts', () => {
     expect(saved(seen)?.steps.map(step => step.status)).toEqual(['completed', 'pending', 'pending'])
   })
 
-  test('approves amend_plan without a prompt, keeps it loaded, and draws each call as one dim line', async ($, on) => {
+  test('keeps amend_plan loaded and draws each call as one dim line', async ($, on) => {
     world(on, { modelText: SPLIT })
-    on('tool.check', () => ({ decision: 'ask', reason: 'the session’s rules' }))
     on('tool.describe', ($, e) => ({ description: e.description, isDeferred: true }))
     await start($)
     await $.tool.call({ tool: 'ExitPlanMode' })
 
-    expect((await $.tool.check({ tool: AMEND, input: { action: 'add', title: 'x' } })).decision).toBe('allow')
     const described = await $.tool.describe({
       tool: AMEND,
       description: 'Changes the checklist',

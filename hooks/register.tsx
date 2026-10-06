@@ -247,23 +247,24 @@ const NOT_MAIN = {
 } as const
 
 /**
- * Writes a change to the plan's steps under its approval, made on the latest
- * copy rather than the one the caller read, so two calls in one turn (a
- * check-off beside an added step) both land. Null when nothing was written.
+ * A change to the plan's steps under its approval, for save(): made on the
+ * latest copy rather than the one the caller read, so two calls in one turn (a
+ * check-off beside an added step) both land. Another approval is left as it is.
  */
-async function rewrite(
-  $: EngineInterface,
+function revision(
   base: Plan,
   change: (steps: PlanStep[]) => PlanStep[],
-  extra: Partial<Plan> = {}
-): Promise<Plan | null> {
-  let isWritten = false
-  const plan = await save($, latest => {
-    if (latest === null || latest.approvedAt !== base.approvedAt) return latest
-    isWritten = true
-    return { ...latest, ...extra, steps: change(latest.steps) }
-  })
-  return isWritten ? plan : null
+  extra?: Partial<Plan>
+): (latest: Plan | null) => Plan | null {
+  return latest =>
+    latest === null || latest.approvedAt !== base.approvedAt
+      ? latest
+      : { ...latest, ...extra, steps: change(latest.steps) }
+}
+
+/** What save() wrote under this approval, or null when another plan was there. */
+function written(base: Plan, plan: Plan | null): Plan | null {
+  return plan !== null && plan.approvedAt === base.approvedAt ? plan : null
 }
 
 /** Applies status changes, then toasts what was newly checked off. */
@@ -276,12 +277,13 @@ async function mark($: EngineInterface, changes: readonly Change[]): Promise<Pla
   )
   if (found.isRevised || wanted.length === 0) return base
 
-  const plan = await rewrite($, base, steps =>
+  const change = revision(base, steps =>
     steps.map(step => {
-      const change = wanted.find(one => one.n === step.n)
-      return change ? { ...step, status: change.status } : step
+      const found = wanted.find(one => one.n === step.n)
+      return found ? { ...step, status: found.status } : step
     })
   )
+  const plan = written(base, await save($, change))
   if (plan === null) return plan
 
   const checked = wanted.filter(change => change.status === 'completed')
@@ -421,12 +423,8 @@ export const register: Register = on => {
     return { result: updateResult(step, status, title, progressLine(after)) }
   }).catch(() => ({ result: 'Stepline could not update the checklist.', isError: true }))
 
-  // The mod's own tools change nothing but its checklist: no prompt for them,
-  // and their schemas stay in the tool list so the model needs no ToolSearch first.
-  on('tool.check', { tool: TOOL_NAME }, () => ({
-    decision: 'allow',
-    reason: 'Stepline only updates its own checklist',
-  }))
+  // The mod's own tools' schemas stay in the tool list so the model needs no
+  // ToolSearch first. Their permission checks are the person's rules' to answer.
   on('tool.describe', { tool: TOOL_NAME }, async ($, e, next) => ({
     ...(await next(e)),
     isDeferred: false,
@@ -462,8 +460,7 @@ export const register: Register = on => {
       }
       // The number is the latest list's, which a call beside this one may have grown.
       let n = 0
-      const after = await rewrite(
-        $,
+      const change = revision(
         plan,
         steps => {
           n = Math.max(0, ...steps.map(one => one.n)) + 1
@@ -471,26 +468,23 @@ export const register: Register = on => {
         },
         { amendedAt: Date.now() }
       )
+      const after = written(plan, await save($, change))
       if (after === null || n === 0) return NOT_CHANGED
       $.ui.toast(`+ ${n}. ${text} (${doneCount(after)}/${after.steps.length})`)
       return { result: updateResult(n, 'pending', text, progressLine(after)) }
     }
     if (typeof step !== 'number' || !plan.steps.some(one => one.n === step)) return noStep(plan, step)
-    const after = await rewrite(
-      $,
+    const change = revision(
       plan,
       steps => steps.map(one => (one.n === step ? { ...one, title: text } : one)),
       { amendedAt: Date.now() }
     )
+    const after = written(plan, await save($, change))
     if (after === null) return NOT_CHANGED
     const status = after.steps.find(one => one.n === step)?.status ?? 'pending'
     return { result: updateResult(step, status, text, progressLine(after)) }
   }).catch(() => NOT_CHANGED)
 
-  on('tool.check', { tool: AMEND_NAME }, () => ({
-    decision: 'allow',
-    reason: 'Stepline only changes its own checklist',
-  }))
   on('tool.describe', { tool: AMEND_NAME }, async ($, e, next) => ({
     ...(await next(e)),
     isDeferred: false,

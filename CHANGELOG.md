@@ -2,6 +2,11 @@
 
 Each release raises `version` in `.claude-plugin/plugin.json`. Claude Code offers an update only when that number changes.
 
+## 1.2.1
+
+- **Permission checks are yours again.** Stepline no longer answers the permission check for its own tools, `mcp__stepline__update_step` and `mcp__stepline__amend_plan`, because Anthropic's plugin directory doesn't allow a plugin to answer allow. Your permission mode and rules decide each call, as for any other tool. To skip the prompt, allow `mcp__stepline__*` in `/permissions`; the README's Troubleshooting section says how.
+- **Ready for the directory's scan.** The helper that writes a step change no longer takes the engine interface, which the directory's reader couldn't follow there. Nothing changes in what the plugin does.
+
 ## 1.2.0
 
 - **The checklist follows the work.** A second tool, `mcp__stepline__amend_plan`, lets Claude add a step for something you ask for that no step covers (it goes at the end with the next number, marked `+` in the pane), retitle a step when you change what it means, and note an aside: a few words on a fix or a tangent, shown in the band in place of `Next` until the next check-off or your next prompt. An in-progress TodoWrite item that matches no step shows as an aside too. Each call is one dim transcript line, and the tool is allowed without a prompt and kept in Claude's tool list, like `update_step`.
