@@ -34,7 +34,7 @@ Claude Code v2.1.290 or later, in the terminal or the Desktop app's Code tab. Th
 Clone the repository, then point Claude Code at the folder:
 
 ```bash
-git clone https://github.com/getsentry/plan-progress.git
+git clone https://github.com/saadk408/plan-progress.git
 ```
 
 To load it in every session, add the folder to the `env` block of `~/.claude/settings.json`:
