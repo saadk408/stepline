@@ -29,6 +29,7 @@ const USAGE = {
 }
 
 const UPDATE = 'mcp__stepline__update_step'
+const AMEND = 'mcp__stepline__amend_plan'
 const KEY = 'plan:/repo'
 const COMMAND = {
   origin: { kind: 'composer' },
@@ -720,5 +721,301 @@ describe('across sessions', () => {
     await $.command.run({ command: 'stepline', args: 'clear', ...COMMAND })
 
     expect(saved(seen)).toEqual(newer)
+  })
+})
+
+describe('changing the plan as the work drifts', () => {
+  test('add appends a step with the next number, toasts it, and reopens a finished plan', async ($, on) => {
+    const seen = world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    for (const step of [1, 2, 3]) await $.tool.call({ tool: UPDATE, step, status: 'completed' })
+    await $.turn.start({ text: 'Thanks!', turnId: 'turn-1' })
+
+    const added = await $.tool.call({ tool: AMEND, action: 'add', title: '**Add** rate limiting' })
+
+    expect(String(added.result)).toBe(
+      'Step 4 is pending: Add rate limiting. 3/4 done. Next open step: 4. Add rate limiting'
+    )
+    expect(seen.toasts.at(-1)).toBe('+ 4. Add rate limiting (3/4)')
+    expect(saved(seen)?.steps.at(-1)).toEqual({ n: 4, title: 'Add rate limiting', status: 'pending', isAdded: true })
+    expect(typeof saved(seen)?.amendedAt).toBe('number')
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await band($, surface)
+      expect(await ui.find({ type: 'Text', text: '4. Add rate limiting' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: ' 3/4' })).toBeDefined()
+      await ui.unmount()
+      const full = await pane($, surface)
+      expect(await full.find({ type: 'Text', text: '4. Add rate limiting +' })).toBeDefined()
+      await full.unmount()
+    }
+  })
+
+  test('add refuses a step number, an empty title, and a 21st step', async ($, on) => {
+    world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+
+    expect((await $.tool.call({ tool: AMEND, action: 'add', step: 4, title: 'Ship it' })).isError).toBe(true)
+    expect((await $.tool.call({ tool: AMEND, action: 'add', title: '  ' })).isError).toBe(true)
+    for (let i = 4; i <= 20; i++) await $.tool.call({ tool: AMEND, action: 'add', title: `Step ${i}` })
+    const full = await $.tool.call({ tool: AMEND, action: 'add', title: 'One too many' })
+
+    expect(full.isError).toBe(true)
+    expect(String(full.result)).toBe('The checklist holds at most 20 steps.')
+  })
+
+  test('a check-off and an added step in the same turn both land', async ($, on) => {
+    const seen = world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+
+    await Promise.all([
+      $.tool.call({ tool: UPDATE, step: 1, status: 'completed' }),
+      $.tool.call({ tool: AMEND, action: 'add', title: 'Add rate limiting' }),
+      $.tool.call({ tool: UPDATE, step: 2, status: 'completed' }),
+    ])
+
+    expect(saved(seen)?.steps.map(step => step.status)).toEqual(['completed', 'completed', 'pending', 'pending'])
+    expect(saved(seen)?.steps[3]?.title).toBe('Add rate limiting')
+  })
+
+  test('retitle renames a step and keeps its status', async ($, on) => {
+    const seen = world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    await $.tool.call({ tool: UPDATE, step: 2, status: 'in_progress' })
+
+    const renamed = await $.tool.call({ tool: AMEND, action: 'retitle', step: 2, title: 'Add the GET /status endpoint' })
+
+    expect(String(renamed.result)).toBe(
+      'Step 2 is in progress: Add the GET /status endpoint. 0/3 done. Next open step: 1. Add the HealthSerializer'
+    )
+    expect(saved(seen)?.steps[1]).toEqual({ n: 2, title: 'Add the GET /status endpoint', status: 'in_progress' })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await band($, surface)
+      expect(await ui.find({ type: 'Text', text: '2. Add the GET /status endpoint' })).toBeDefined()
+      await ui.unmount()
+      const full = await pane($, surface)
+      expect(await full.find({ type: 'Text', text: '2. Add the GET /status endpoint' })).toBeDefined()
+      await full.unmount()
+    }
+    expect((await $.tool.call({ tool: AMEND, action: 'retitle', step: 9, title: 'Nope' })).isError).toBe(true)
+    expect((await $.tool.call({ tool: AMEND, action: 'retitle', step: 2 })).isError).toBe(true)
+  })
+
+  test('an aside shows under Now in place of Next until the next step, prompt, or an empty one', async ($, on) => {
+    world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+
+    const noted = await $.tool.call({ tool: AMEND, action: 'aside', title: 'Fixing the import cycle first' })
+    expect(String(noted.result)).toBe('Aside noted: Fixing the import cycle first.')
+
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await band($, surface)
+      expect(await ui.find({ type: 'Text', text: 'Aside' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Fixing the import cycle first' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Next' })).toBeUndefined()
+      await ui.unmount()
+      const full = await pane($, surface)
+      expect(await full.find({ type: 'Text', text: '  ↳ Fixing the import cycle first' })).toBeDefined()
+      await full.unmount()
+    }
+
+    await $.tool.call({ tool: UPDATE, step: 1, status: 'completed' })
+    const stepped = await band($, 'terminal')
+    expect(await stepped.find({ type: 'Text', text: 'Aside' })).toBeUndefined()
+    expect(await stepped.find({ type: 'Text', text: 'Next' })).toBeDefined()
+    await stepped.unmount()
+
+    await $.tool.call({ tool: AMEND, action: 'aside', title: 'Answering a question' })
+    await $.turn.start({ text: 'Carry on', turnId: 'turn-2' })
+    const prompted = await band($, 'terminal')
+    expect(await prompted.find({ type: 'Text', text: 'Aside' })).toBeUndefined()
+    await prompted.unmount()
+
+    await $.tool.call({ tool: AMEND, action: 'aside', title: 'Answering a question' })
+    const cleared = await $.tool.call({ tool: AMEND, action: 'aside' })
+    expect(String(cleared.result)).toBe('Aside cleared.')
+    const gone = await band($, 'terminal')
+    expect(await gone.find({ type: 'Text', text: 'Aside' })).toBeUndefined()
+    await gone.unmount()
+  })
+
+  test('an in-progress todo that is no step becomes the aside, until its list drops it', async ($, on) => {
+    world(on, { modelText: SPLIT })
+    on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { oldTodos: [], newTodos: [] } }))
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    const todos = (status: 'in_progress' | 'completed') => [
+      { content: 'Add the HealthSerializer', status: 'in_progress' as const, activeForm: 'Adding' },
+      { content: 'Fix the `tsc` errors in auth.ts', status, activeForm: 'Fixing' },
+    ]
+
+    await $.tool.call({ tool: 'TodoWrite', todos: todos('in_progress') })
+    const ui = await band($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: 'Fix the tsc errors in auth.ts' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '1. Add the HealthSerializer' })).toBeDefined()
+    await ui.unmount()
+
+    await $.tool.call({ tool: 'TodoWrite', todos: todos('completed') })
+    const done = await band($, 'terminal')
+    expect(await done.find({ type: 'Text', text: 'Aside' })).toBeUndefined()
+    await done.unmount()
+
+    // One the model set itself outlives its todo list.
+    await $.tool.call({ tool: AMEND, action: 'aside', title: 'Answering a question' })
+    await $.tool.call({ tool: 'TodoWrite', todos: todos('completed') })
+    const kept = await band($, 'terminal')
+    expect(await kept.find({ type: 'Text', text: 'Answering a question' })).toBeDefined()
+    await kept.unmount()
+  })
+
+  test('approving a revised plan carries its finished steps over and tells the model so', async ($, on) => {
+    const options = { modelText: SPLIT }
+    const seen = world(on, options)
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    await $.tool.call({ tool: UPDATE, step: 1, status: 'completed' })
+    await $.tool.call({ tool: UPDATE, step: 2, status: 'skipped' })
+    const first = saved(seen) as Plan
+
+    options.modelText = JSON.stringify({
+      title: 'Health check endpoint',
+      steps: ['Add the HealthSerializer', 'Add the GET /health endpoint', 'Document the endpoint', 'Write endpoint tests'],
+    })
+    const approved = await $.tool.call({ tool: 'ExitPlanMode' })
+
+    expect(approved.context?.at(-1)).toContain('This revises the plan approved earlier')
+    expect(approved.context?.at(-1)).toContain('1. [x] Add the HealthSerializer')
+    expect(approved.context?.at(-1)).toContain('2. [-] Add the GET /health endpoint')
+    expect(approved.context?.at(-1)).toContain('3. [ ] Document the endpoint')
+    const revised = saved(seen) as Plan
+    expect(revised.revisedFrom).toBe(first.approvedAt)
+    expect(revised.steps.map(step => step.status)).toEqual(['completed', 'skipped', 'pending', 'pending'])
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await pane($, surface)
+      expect(await ui.find({ type: 'Text', text: '(revised from an earlier approval)' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('a different plan replaces the one tracked, and a finished one is never revised', async ($, on) => {
+    const options = { modelText: SPLIT }
+    const seen = world(on, options)
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    await $.tool.call({ tool: UPDATE, step: 3, status: 'completed' })
+
+    options.modelText = JSON.stringify({
+      title: 'Rate limiting',
+      steps: ['Add the limiter', 'Wire it in', 'Write endpoint tests'],
+    })
+    const other = await $.tool.call({ tool: 'ExitPlanMode' })
+
+    expect(other.context?.at(-1)).not.toContain('This revises')
+    expect(saved(seen)?.revisedFrom).toBeUndefined()
+    expect(saved(seen)?.steps.map(step => step.status)).toEqual(['pending', 'pending', 'pending'])
+
+    for (const step of [1, 2, 3]) await $.tool.call({ tool: UPDATE, step, status: 'completed' })
+    await $.tool.call({ tool: 'ExitPlanMode' })
+
+    expect(saved(seen)?.revisedFrom).toBeUndefined()
+    expect(saved(seen)?.steps.map(step => step.status)).toEqual(['pending', 'pending', 'pending'])
+  })
+
+  test('a step another session added is accepted, and a plan it revised is offered back', async ($, on) => {
+    const seen = world(on, { modelText: SPLIT })
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+    const approved = saved(seen) as Plan
+    seen.store.set(KEY, {
+      ...approved,
+      amendedAt: approved.approvedAt + 1,
+      steps: [...approved.steps, { n: 4, title: 'Add rate limiting', status: 'pending', isAdded: true }],
+    })
+
+    const fourth = await $.tool.call({ tool: UPDATE, step: 4, status: 'completed' })
+
+    expect(fourth.isError).not.toBe(true)
+    expect(saved(seen)?.steps.map(step => step.status)).toEqual(['pending', 'pending', 'pending', 'completed'])
+    const ui = await band($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: ' 1/4' })).toBeDefined()
+    await ui.unmount()
+
+    // Another session approves a revision of this plan.
+    const revision: Plan = {
+      ...approved,
+      title: 'Health check endpoint, revised',
+      approvedAt: approved.approvedAt + 1000,
+      revisedFrom: approved.approvedAt,
+      knownBy: 'session-b',
+    }
+    seen.store.set(KEY, revision)
+    const refused = await $.tool.call({ tool: UPDATE, step: 1, status: 'completed' })
+
+    expect(refused.isError).toBe(true)
+    expect(String(refused.result)).toBe(
+      'The plan was revised in another session (now "Health check endpoint, revised", 0/3 done). Run /stepline to pick up the new checklist.'
+    )
+    expect(saved(seen)).toEqual(revision)
+    // The refusal holds until /stepline hands the new checklist over.
+    expect((await $.tool.call({ tool: UPDATE, step: 1, status: 'completed' })).isError).toBe(true)
+    expect((await $.tool.call({ tool: AMEND, action: 'add', title: 'Ship it' })).isError).toBe(true)
+    expect(saved(seen)).toEqual(revision)
+    const line = await band($, 'terminal')
+    expect(
+      await line.find({ type: 'Text', text: /^Unfinished: "Health check endpoint, revised" 0\/3/ })
+    ).toBeDefined()
+    await line.unmount()
+
+    await $.command.run({ command: 'stepline', args: '', ...COMMAND })
+    const accepted = await $.tool.call({ tool: UPDATE, step: 1, status: 'completed' })
+
+    expect(accepted.isError).not.toBe(true)
+    expect(saved(seen)?.knownBy).toBe('session-a')
+    expect(saved(seen)?.steps.map(step => step.status)).toEqual(['completed', 'pending', 'pending'])
+  })
+
+  test('approves amend_plan without a prompt, keeps it loaded, and draws each call as one dim line', async ($, on) => {
+    world(on, { modelText: SPLIT })
+    on('tool.check', () => ({ decision: 'ask', reason: 'the session’s rules' }))
+    on('tool.describe', ($, e) => ({ description: e.description, isDeferred: true }))
+    await start($)
+    await $.tool.call({ tool: 'ExitPlanMode' })
+
+    expect((await $.tool.check({ tool: AMEND, input: { action: 'add', title: 'x' } })).decision).toBe('allow')
+    const described = await $.tool.describe({
+      tool: AMEND,
+      description: 'Changes the checklist',
+      provider: { plugin: 'stepline', tier: 'user' },
+    })
+    expect(described).toEqual({ description: 'Changes the checklist', isDeferred: false })
+
+    const added = await $.tool.call({ tool: AMEND, action: 'add', title: 'Add rate limiting' })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await toolRow($, surface, {
+        tool: AMEND,
+        input: { action: 'add', title: 'Add rate limiting' },
+        output: added.result,
+      })
+      expect(await ui.find({ type: 'Text', text: '+ ' })).toBeDefined()
+      const row = await ui.find({ type: 'Text', text: 'plan 0/4 · Add rate limiting' })
+      expect(row?.props.dimColor).toBe(true)
+      expect(await ui.find({ type: 'Text', text: 'engine row' })).toBeUndefined()
+      await ui.unmount()
+    }
+    const aside = await toolRow($, 'terminal', {
+      tool: AMEND,
+      input: { action: 'aside', title: 'Fixing the build' },
+      output: 'Aside noted: Fixing the build.',
+    })
+    expect(await aside.find({ type: 'Text', text: '↳ ' })).toBeDefined()
+    expect(await aside.find({ type: 'Text', text: 'Fixing the build' })).toBeDefined()
+    await aside.unmount()
+    const errored = await toolRow($, 'terminal', { tool: AMEND, input: { action: 'add' }, isErrored: true })
+    expect(await errored.find({ type: 'Text', text: 'engine row' })).toBeDefined()
+    await errored.unmount()
   })
 })

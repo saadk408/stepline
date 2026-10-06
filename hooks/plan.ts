@@ -1,7 +1,7 @@
 // Turning an approved plan's text into steps, and matching titles to them:
 // plain functions with no `$`, so tests can call them directly.
 
-import type { Plan, PlanStep, StepStatus } from '../types'
+import type { Aside, Plan, PlanStep, StepStatus } from '../types'
 
 export type Split = { title: string; steps: string[] }
 
@@ -109,4 +109,67 @@ export function updateResult(n: number, status: StepStatus, title: string, progr
 export function readUpdateResult(text: string): { title: string; count: string } | undefined {
   const match = /^Step \d+ is [a-z ]+: (.*)\. (?:All \d+ steps are done \()?(\d+\/\d+) done/.exec(text)
   return match ? { title: match[1] ?? '', count: match[2] ?? '' } : undefined
+}
+
+// Steps and their statuses
+
+export const isClosed = (status: StepStatus) => status === 'completed' || status === 'skipped'
+export const isDone = (plan: Plan) => plan.steps.every(step => isClosed(step.status))
+
+/** The title of a plan whose split names none; it says nothing about the plan. */
+export const FALLBACK_TITLE = 'Approved plan'
+
+/**
+ * Whether a newly approved split revises the plan being tracked, and for each
+ * new step, the step of that plan it carries on from. A finished plan is never
+ * revised: the next piece of work's "Write tests" would come back checked off.
+ */
+export function carryOver(current: Plan | null, split: Split): { isRevision: boolean; from: (PlanStep | undefined)[] } {
+  const fresh = { isRevision: false, from: split.steps.map(() => undefined) }
+  if (current === null || isDone(current)) return fresh
+  const from = split.steps.map(title => stepFor(current, title))
+  const matched = from.filter(step => step !== undefined).length
+  if (matched === 0) return fresh
+  const title = normalize(split.title)
+  const isSameTitle = title !== '' && title !== normalize(FALLBACK_TITLE) && title === normalize(current.title)
+  return isSameTitle || matched * 2 >= split.steps.length ? { isRevision: true, from } : fresh
+}
+
+/** The Task ids of a revised plan's steps, keyed to the steps that carry them on. */
+export function carryTaskIds(
+  taskIds: Record<string, number>,
+  from: readonly (PlanStep | undefined)[],
+  count: number
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(taskIds).flatMap(([id, n]) => {
+      const i = from.findIndex(step => step?.n === n)
+      return i < 0 || i >= count ? [] : [[id, i + 1]]
+    })
+  )
+}
+
+/**
+ * The aside after a TodoWrite: the item under way that is no step, else none
+ * when the aside came from an earlier list, else the one the model set itself.
+ */
+export function todoAside(aside: Aside | null, off: string | undefined): Aside | null {
+  if (off !== undefined && off !== '') return { text: off, source: 'todo' }
+  return aside?.source === 'todo' ? null : aside
+}
+
+/**
+ * The session's steps with those another session saved for the same approval:
+ * the union by number, each title from the side amended later, and each status
+ * as the store has it, so the other session's check-off counts.
+ */
+export function mergeSteps(mine: Plan, stored: Plan): PlanStep[] {
+  const isMineNewer = (mine.amendedAt ?? 0) > (stored.amendedAt ?? 0)
+  const numbers = [...new Set([...mine.steps, ...stored.steps].map(step => step.n))].sort((a, b) => a - b)
+  return numbers.flatMap(n => {
+    const own = mine.steps.find(step => step.n === n)
+    const theirs = stored.steps.find(step => step.n === n)
+    if (own === undefined || theirs === undefined) return own ?? theirs ?? []
+    return [{ ...(isMineNewer ? own : theirs), status: theirs.status }]
+  })
 }

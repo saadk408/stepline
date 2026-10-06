@@ -1,7 +1,18 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cleanTitle, parsePlan, parseSplit, readUpdateResult, stepFor, updateResult } from '../hooks/plan'
-import type { Plan } from '../types'
+import {
+  carryOver,
+  carryTaskIds,
+  cleanTitle,
+  mergeSteps,
+  parsePlan,
+  parseSplit,
+  readUpdateResult,
+  stepFor,
+  todoAside,
+  updateResult,
+} from '../hooks/plan'
+import type { Plan, PlanStep } from '../types'
 
 describe('parsePlan, the fallback when the model call fails', () => {
   test('takes the top-level numbered list and leaves sub-items out', () => {
@@ -125,5 +136,131 @@ describe('updateResult and readUpdateResult, the text a transcript row reads bac
 
   test('read nothing from text they did not write', () => {
     expect(readUpdateResult('No approved plan is being tracked.')).toBeUndefined()
+  })
+})
+
+describe('carryOver, whether a new approval revises the plan being tracked', () => {
+  const tracked: Plan = {
+    title: 'Health check endpoint',
+    steps: [
+      { n: 1, title: 'Add the HealthSerializer', status: 'completed' },
+      { n: 2, title: 'Add the GET /health endpoint', status: 'skipped' },
+      { n: 3, title: 'Write endpoint tests', status: 'pending' },
+    ],
+    approvedAt: 0,
+    root: '/repo',
+    knownBy: '',
+    splitBy: 'model',
+    taskIds: {},
+  }
+
+  test('carries each status over by title when the title is the same', () => {
+    const carried = carryOver(tracked, {
+      title: 'Health check endpoint',
+      steps: ['Add the HealthSerializer', 'Document the endpoint', 'Write endpoint tests'],
+    })
+
+    expect(carried.isRevision).toBe(true)
+    expect(carried.from.map(step => step?.status)).toEqual(['completed', undefined, 'pending'])
+  })
+
+  test('is a revision under a new title when at least half the steps match', () => {
+    const carried = carryOver(tracked, {
+      title: 'Health check, take two',
+      steps: ['1. Add the HealthSerializer', 'Add the GET /health endpoint', 'Deploy it'],
+    })
+
+    expect(carried.isRevision).toBe(true)
+    expect(carried.from.map(step => step?.n)).toEqual([1, 2, undefined])
+  })
+
+  test('is a fresh plan when fewer than half match under a new title', () => {
+    const carried = carryOver(tracked, {
+      title: 'Rate limiting',
+      steps: ['Add the limiter', 'Wire it in', 'Write endpoint tests'],
+    })
+
+    expect(carried.isRevision).toBe(false)
+    expect(carried.from).toEqual([undefined, undefined, undefined])
+  })
+
+  test('never revises a finished plan, one with no plan, or by the fallback title alone', () => {
+    const finished: Plan = { ...tracked, steps: tracked.steps.map(step => ({ ...step, status: 'completed' })) }
+    expect(carryOver(finished, { title: 'Health check endpoint', steps: ['Write endpoint tests', 'Ship it'] }).isRevision).toBe(false)
+    expect(carryOver(null, { title: 'Health check endpoint', steps: ['Write endpoint tests'] }).isRevision).toBe(false)
+
+    const untitled: Plan = { ...tracked, title: 'Approved plan' }
+    expect(carryOver(untitled, { title: 'Approved plan', steps: ['Write endpoint tests', 'Ship it', 'Tag it'] }).isRevision).toBe(false)
+    expect(carryOver(untitled, { title: '', steps: ['Write endpoint tests', 'Ship it', 'Tag it'] }).isRevision).toBe(false)
+  })
+})
+
+describe('mergeSteps, the session’s steps with another session’s', () => {
+  const plan = (steps: PlanStep[], amendedAt?: number): Plan => ({
+    title: 'Health check',
+    steps,
+    approvedAt: 0,
+    root: '/repo',
+    knownBy: '',
+    splitBy: 'model',
+    taskIds: {},
+    ...(amendedAt === undefined ? {} : { amendedAt }),
+  })
+
+  test('keeps a step either side added, and takes each status from the store', () => {
+    const mine = plan([
+      { n: 1, title: 'Add the model', status: 'completed' },
+      { n: 2, title: 'Add the endpoint', status: 'pending' },
+    ])
+    const stored = plan(
+      [
+        { n: 1, title: 'Add the model', status: 'pending' },
+        { n: 2, title: 'Add the endpoint', status: 'completed' },
+        { n: 3, title: 'Write tests', status: 'pending', isAdded: true },
+      ],
+      5
+    )
+
+    expect(mergeSteps(mine, stored)).toEqual([
+      { n: 1, title: 'Add the model', status: 'pending' },
+      { n: 2, title: 'Add the endpoint', status: 'completed' },
+      { n: 3, title: 'Write tests', status: 'pending', isAdded: true },
+    ])
+    expect(mergeSteps(stored, mine).map(step => step.n)).toEqual([1, 2, 3])
+  })
+
+  test('takes a title from the side amended later', () => {
+    const mine = plan([{ n: 1, title: 'Use Redis for the cache', status: 'pending' }], 9)
+    const stored = plan([{ n: 1, title: 'Use Postgres for the cache', status: 'in_progress' }], 5)
+
+    expect(mergeSteps(mine, stored)).toEqual([{ n: 1, title: 'Use Redis for the cache', status: 'in_progress' }])
+    expect(mergeSteps(plan(mine.steps, 4), stored)).toEqual([
+      { n: 1, title: 'Use Postgres for the cache', status: 'in_progress' },
+    ])
+  })
+})
+
+describe('carryTaskIds, the Task ids a revision keeps', () => {
+  const from = [
+    undefined,
+    { n: 3, title: 'Write tests', status: 'pending' as const },
+    { n: 1, title: 'Add the model', status: 'completed' as const },
+  ]
+
+  test('keys each id to the new step that carries its old one on', () => {
+    expect(carryTaskIds({ 'task-7': 3, 'task-8': 1, 'task-9': 2 }, from, 3)).toEqual({ 'task-7': 2, 'task-8': 3 })
+  })
+
+  test('drops an id whose step fell past the step limit', () => {
+    expect(carryTaskIds({ 'task-8': 1 }, from, 2)).toEqual({})
+  })
+})
+
+describe('todoAside, the aside after a todo list', () => {
+  test('takes an item under way, drops a list’s aside, and keeps the model’s own', () => {
+    expect(todoAside(null, 'Fix the build')).toEqual({ text: 'Fix the build', source: 'todo' })
+    expect(todoAside({ text: 'Old', source: 'todo' }, undefined)).toBeNull()
+    expect(todoAside({ text: 'Mine', source: 'tool' }, undefined)).toEqual({ text: 'Mine', source: 'tool' })
+    expect(todoAside({ text: 'Mine', source: 'tool' }, '')).toEqual({ text: 'Mine', source: 'tool' })
   })
 })

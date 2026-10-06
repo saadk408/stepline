@@ -1,7 +1,7 @@
 {
   "name": "stepline",
   "displayName": "Stepline",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Turns a plan you approve in plan mode into a live checklist above the prompt that checks off each step as Claude completes it",
   "author": {
     "name": "Saad Khan",

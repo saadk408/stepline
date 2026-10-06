@@ -32,10 +32,10 @@ Stepline is a mod. It runs inside Claude Code, with your permissions, in every s
 - make one `haiku` call per approved plan, through your own Claude Code session
 - read the titles and statuses in Claude's TodoWrite, TaskCreate, and TaskUpdate calls, without changing them
 - be told when each turn starts. It ignores the prompt's text and can't change it.
-- add the plan's checklist to Claude's context, on approval and when `/stepline` hands the plan back, and give Claude a one-line reply to each `/stepline` command and `update_step` call
-- allow its own tool, `mcp__stepline__update_step`, without a prompt. It doesn't answer the permission check for any other tool.
+- add the plan's checklist to Claude's context, on approval and when `/stepline` hands the plan back, and give Claude a one-line reply to each `/stepline` command and each `update_step` or `amend_plan` call
+- allow its own tools, `mcp__stepline__update_step` and `mcp__stepline__amend_plan`, without a prompt. It doesn't answer the permission check for any other tool.
 - save the plan in its own store under `~/.claude/plugins/store/`
-- draw the band above the prompt, its pane, its toasts, and the transcript rows of its own tool
+- draw the band above the prompt, its pane, its toasts, and the transcript rows of its own tools
 
 The README's [Data and permissions](README.md#data-and-permissions) section covers each of these, and `claude plugin validate .` prints every hook the mod registers and every call it makes. [PRIVACY.md](PRIVACY.md) says what it stores and for how long.
 

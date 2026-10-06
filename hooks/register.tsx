@@ -1,20 +1,39 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Plan, PlanStep, StepStatus } from '../types'
+import type { AmendAction, Aside, Plan, PlanStep, StepStatus } from '../types'
 
-import { parsePlan, parseSplit, readUpdateResult, SPLIT_SYSTEM, splitPrompt, stepFor, updateResult } from './plan'
+import {
+  carryOver,
+  carryTaskIds,
+  cleanTitle,
+  FALLBACK_TITLE,
+  isClosed,
+  isDone,
+  mergeSteps,
+  parsePlan,
+  parseSplit,
+  readUpdateResult,
+  SPLIT_SYSTEM,
+  splitPrompt,
+  stepFor,
+  todoAside,
+  updateResult,
+} from './plan'
 import type { Split } from './plan'
 
 const PANE = 'stepline'
 const PANE_TITLE = 'Plan'
 const TOOL = 'update_step'
 const TOOL_NAME = 'mcp__stepline__update_step'
+const AMEND = 'amend_plan'
+const AMEND_NAME = 'mcp__stepline__amend_plan'
 const MAX_STEPS = 20
 
 const planAtom = atom({ plugin: 'stepline', key: 'plan' } as const, null as Plan | null)
 const paneOpenAtom = atom({ plugin: 'stepline', key: 'isPaneOpen' } as const, false)
 const doneSeenAtom = atom({ plugin: 'stepline', key: 'isDoneSeen' } as const, false)
+const asideAtom = atom({ plugin: 'stepline', key: 'aside' } as const, null as Aside | null)
 /** Cells for the band's label column: PLAN, Now, Next. */
 const LABEL_WIDTH = 6
 /** The band's card stops growing here, so on a wide terminal the bar stays near the title. */
@@ -40,13 +59,20 @@ const MARK: Record<StepStatus, string> = {
   skipped: '-',
 }
 
+const ACTIONS: readonly AmendAction[] = ['add', 'retitle', 'aside']
+const AMEND_ICON: Record<AmendAction, string> = {
+  add: '+',
+  retitle: '✎',
+  aside: '↳',
+}
+
 type Change = { n: number; status: StepStatus }
 
 const isStatus = (value: unknown): value is StepStatus =>
   typeof value === 'string' && (STATUSES as readonly string[]).includes(value)
-const isClosed = (status: StepStatus) => status === 'completed' || status === 'skipped'
+const isAction = (value: unknown): value is AmendAction =>
+  typeof value === 'string' && (ACTIONS as readonly string[]).includes(value)
 const doneCount = (plan: Plan) => plan.steps.filter(step => isClosed(step.status)).length
-const isDone = (plan: Plan) => plan.steps.every(step => isClosed(step.status))
 const storeKey = (root: string) => `plan:${root}`
 /** The step being worked on: the one in progress, else the first still open. */
 const currentStep = (plan: Plan) =>
@@ -93,9 +119,13 @@ function checklist(plan: Plan): string {
 function announce(plan: Plan): string {
   return [
     `Stepline is tracking the approved plan "${plan.title}" as a checklist the person watches above the prompt:`,
+    ...(plan.revisedFrom === undefined
+      ? []
+      : ['This revises the plan approved earlier; steps already done are marked.']),
     checklist(plan),
     '',
     `Work through the steps in order. Call ${TOOL_NAME} with {"step": N, "status": "completed"} as soon as step N is done ("skipped" if the person drops it). The person's view treats the first unfinished step as the one in progress, so call it with "in_progress" only when you start a step out of order. If you also keep a TodoWrite or Task list, use these step titles verbatim.`,
+    `When the work changes, tell Stepline with ${AMEND_NAME}: "add" for work the person asks for that no step covers, "retitle" when the person changes what a step means, and "aside" with a few words before unplanned work such as a fix or a tangent. Don't add steps for your own sub-tasks.`,
   ].join('\n')
 }
 
@@ -165,38 +195,84 @@ async function save(
   return plan
 }
 
-/** The session's plan with the progress other sessions saved for the same approval. */
+/**
+ * The session's plan with what other sessions saved: their progress on the
+ * same approval and the steps they added, or the plan they revised it into.
+ */
 async function withSaved($: EngineInterface, plan: Plan): Promise<Plan> {
   const stored = await storedPlan($, plan.root)
-  if (stored === null || stored.approvedAt !== plan.approvedAt) return plan
+  if (stored === null) return plan
+  if (stored.revisedFrom === plan.approvedAt) return stored
+  if (stored.approvedAt !== plan.approvedAt) return plan
+  const amendedAt = Math.max(plan.amendedAt ?? 0, stored.amendedAt ?? 0)
   return {
     ...plan,
-    steps: plan.steps.map(step => stored.steps.find(one => one.n === step.n) ?? step),
+    steps: mergeSteps(plan, stored),
     taskIds: { ...stored.taskIds, ...plan.taskIds },
+    ...(amendedAt > 0 ? { amendedAt } : {}),
   }
+}
+
+/**
+ * The session's plan as the store completes it, taken into the session. A
+ * plan another session revised stands in for the old one: until /stepline
+ * hands it over, the band offers it and the tools refuse to change it.
+ */
+async function currentPlan($: EngineInterface): Promise<{ plan: Plan; isRevised: boolean } | null> {
+  const held = await read($, planAtom)
+  if (held === null) return null
+  const plan = await withSaved($, held)
+  // Only a change is written, so a call that finds nothing new redraws nothing.
+  if (JSON.stringify(plan) !== JSON.stringify(held)) await update($, planAtom, () => plan)
+  const isRevised = plan.revisedFrom !== undefined && plan.knownBy !== (await $.session.id())
+  return { plan, isRevised }
+}
+
+const revisedElsewhere = (plan: Plan) =>
+  `The plan was revised in another session (now "${plan.title}", ${doneCount(plan)}/${plan.steps.length} done). Run /stepline to pick up the new checklist.`
+/** The error for a step number the plan doesn't have. */
+const noStep = (plan: Plan, step: unknown) =>
+  ({
+    result: `There is no step ${String(step)}: the plan has steps 1 to ${plan.steps.length}.`,
+    isError: true,
+  }) as const
+const NOT_CHANGED = { result: 'Stepline could not change the checklist.', isError: true } as const
+
+/**
+ * Writes a change to the plan's steps under its approval, made on the latest
+ * copy rather than the one the caller read, so two calls in one turn (a
+ * check-off beside an added step) both land. Null when nothing was written.
+ */
+async function rewrite(
+  $: EngineInterface,
+  base: Plan,
+  change: (steps: PlanStep[]) => PlanStep[],
+  extra: Partial<Plan> = {}
+): Promise<Plan | null> {
+  let isWritten = false
+  const plan = await save($, latest => {
+    if (latest === null || latest.approvedAt !== base.approvedAt) return latest
+    isWritten = true
+    return { ...latest, ...extra, steps: change(latest.steps) }
+  })
+  return isWritten ? plan : null
 }
 
 /** Applies status changes, then toasts what was newly checked off. */
 async function mark($: EngineInterface, changes: readonly Change[]): Promise<Plan | null> {
-  const current = await read($, planAtom)
-  if (current === null) return current
-  const base = await withSaved($, current)
+  const found = await currentPlan($)
+  if (found === null) return null
+  const base = found.plan
   const wanted = changes.filter(change =>
     base.steps.some(step => step.n === change.n && step.status !== change.status)
   )
-  if (wanted.length === 0 && base === current) return current
+  if (found.isRevised || wanted.length === 0) return base
 
-  const plan = await save($, latest =>
-    latest === null || latest.approvedAt !== base.approvedAt
-      ? latest
-      : {
-          ...base,
-          knownBy: latest.knownBy,
-          steps: base.steps.map(step => {
-            const change = wanted.find(one => one.n === step.n)
-            return change ? { ...step, status: change.status } : step
-          }),
-        }
+  const plan = await rewrite($, base, steps =>
+    steps.map(step => {
+      const change = wanted.find(one => one.n === step.n)
+      return change ? { ...step, status: change.status } : step
+    })
   )
   if (plan === null) return plan
 
@@ -236,6 +312,28 @@ export const register: Register = on => {
         additionalProperties: false,
       },
     })
+    await $.tool.register({
+      name: AMEND,
+      description:
+        'Changes the checklist of the approved plan that the person watches above the prompt and in the Stepline pane. "add" appends a step (title required) for work the person asks for that no step covers. "retitle" renames step N (step and title) when the person changes what a step means. "aside" shows a few words under the current step while you do unplanned work such as a fix or a tangent (title; an empty title clears it, and so does your next update_step call). Don’t add steps for your own sub-tasks.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ACTIONS,
+            description: 'What changes: a step added, a step retitled, or an aside noted.',
+          },
+          step: { type: 'integer', minimum: 1, description: 'The number of the step to retitle.' },
+          title: {
+            type: 'string',
+            description: 'The new step’s title, the step’s new title, or the aside’s few words.',
+          },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    })
 
     // A restored plan shows in the band; the pane waits until it's asked for.
     await restorePlan($)
@@ -264,25 +362,31 @@ export const register: Register = on => {
     if (typeof planText !== 'string' || planText.trim() === '') return ran
 
     const split = await splitPlan($, planText, next.signal)
+    // A plan that revises the one being tracked keeps what was done of it.
+    const held = (await currentPlan($))?.plan ?? null
+    const carried = carryOver(held, split)
     const steps = split.steps.slice(0, MAX_STEPS).map((title, i): PlanStep => ({
       n: i + 1,
       title,
-      status: 'pending',
+      status: carried.from[i]?.status ?? 'pending',
     }))
+    const taskIds = carryTaskIds(held?.taskIds ?? {}, carried.from, steps.length)
     const root = await $.session.root()
     const knownBy = await $.session.id()
     const plan = await save($, () => ({
-      title: split.title || 'Approved plan',
+      title: split.title || FALLBACK_TITLE,
       steps,
       approvedAt: Date.now(),
       root,
       knownBy,
       splitBy: split.splitBy,
-      taskIds: {},
+      taskIds,
+      ...(carried.isRevision && held !== null ? { revisedFrom: held.approvedAt } : {}),
     }))
     if (plan === null) return ran
     // The band above the prompt shows the new plan at once, at any width.
     await update($, doneSeenAtom, () => false)
+    await update($, asideAtom, () => null)
 
     return { ...ran, context: [...(ran.context ?? []), announce(plan)] }
   }).catch(($, e, next) => next(e))
@@ -291,26 +395,25 @@ export const register: Register = on => {
   on('tool.call', { tool: TOOL_NAME }, async ($, e) => {
     // The schema is the model's to follow, so the values are checked anyway.
     const { step, status }: { step: unknown; status: unknown } = e
-    const plan = await read($, planAtom)
-    if (plan === null) {
+    const found = await currentPlan($)
+    if (found === null) {
       return { result: 'No approved plan is being tracked, so there is no step to update.', isError: true }
     }
-    if (typeof step !== 'number' || !plan.steps.some(one => one.n === step)) {
-      return {
-        result: `There is no step ${String(step)}: the plan has steps 1 to ${plan.steps.length}.`,
-        isError: true,
-      }
-    }
+    if (found.isRevised) return { result: revisedElsewhere(found.plan), isError: true }
+    const plan = found.plan
+    if (typeof step !== 'number' || !plan.steps.some(one => one.n === step)) return noStep(plan, step)
     if (!isStatus(status)) {
       return { result: `status must be one of ${STATUSES.join(', ')}.`, isError: true }
     }
     const after = (await mark($, [{ n: step, status }])) ?? plan
+    // A step reported ends whatever the model was doing off the plan.
+    await update($, asideAtom, () => null)
     const title = after.steps.find(one => one.n === step)?.title ?? ''
     return { result: updateResult(step, status, title, progressLine(after)) }
   }).catch(() => ({ result: 'Stepline could not update the checklist.', isError: true }))
 
-  // Its own tool updates nothing but its checklist: no prompt for it, and its
-  // schema stays in the tool list so the model needs no ToolSearch first.
+  // The mod's own tools change nothing but its checklist: no prompt for them,
+  // and their schemas stay in the tool list so the model needs no ToolSearch first.
   on('tool.check', { tool: TOOL_NAME }, () => ({
     decision: 'allow',
     reason: 'Stepline only updates its own checklist',
@@ -320,24 +423,91 @@ export const register: Register = on => {
     isDeferred: false,
   }))
 
+  // The tool the model changes the checklist with: a step added, one
+  // retitled, or a few words on work off the plan.
+  on('tool.call', { tool: AMEND_NAME }, async ($, e) => {
+    const { action, step, title }: { action: unknown; step?: unknown; title?: unknown } = e
+    if (!isAction(action)) return { result: `action must be one of ${ACTIONS.join(', ')}.`, isError: true }
+    const found = await currentPlan($)
+    if (found === null) {
+      return { result: 'No approved plan is being tracked, so there is no checklist to change.', isError: true }
+    }
+    if (found.isRevised) return { result: revisedElsewhere(found.plan), isError: true }
+    const plan = found.plan
+    const text = typeof title === 'string' ? cleanTitle(title) : ''
+
+    if (action === 'aside') {
+      // The band is the main conversation's, so a subagent's aside shows nowhere.
+      if (e.agentId !== undefined) {
+        return { result: 'An aside shows only for the main conversation, so none was noted.' }
+      }
+      await update($, asideAtom, () => (text === '' ? null : { text, source: 'tool' }))
+      return { result: text === '' ? 'Aside cleared.' : `Aside noted: ${text}.` }
+    }
+    if (text === '') {
+      return { result: 'title is required: the step’s wording, under 120 characters.', isError: true }
+    }
+    if (action === 'add') {
+      if (step !== undefined) {
+        return { result: '"add" takes no step: the new step gets the next number.', isError: true }
+      }
+      if (plan.steps.length >= MAX_STEPS) {
+        return { result: `The checklist holds at most ${MAX_STEPS} steps.`, isError: true }
+      }
+      // The number is the latest list's, which a call beside this one may have grown.
+      let n = 0
+      const after = await rewrite(
+        $,
+        plan,
+        steps => {
+          n = Math.max(0, ...steps.map(one => one.n)) + 1
+          return [...steps, { n, title: text, status: 'pending', isAdded: true }]
+        },
+        { amendedAt: Date.now() }
+      )
+      if (after === null || n === 0) return NOT_CHANGED
+      $.ui.toast(`+ ${n}. ${text} (${doneCount(after)}/${after.steps.length})`)
+      return { result: updateResult(n, 'pending', text, progressLine(after)) }
+    }
+    if (typeof step !== 'number' || !plan.steps.some(one => one.n === step)) return noStep(plan, step)
+    const after = await rewrite(
+      $,
+      plan,
+      steps => steps.map(one => (one.n === step ? { ...one, title: text } : one)),
+      { amendedAt: Date.now() }
+    )
+    if (after === null) return NOT_CHANGED
+    const status = after.steps.find(one => one.n === step)?.status ?? 'pending'
+    return { result: updateResult(step, status, text, progressLine(after)) }
+  }).catch(() => NOT_CHANGED)
+
+  on('tool.check', { tool: AMEND_NAME }, () => ({
+    decision: 'allow',
+    reason: 'Stepline only changes its own checklist',
+  }))
+  on('tool.describe', { tool: AMEND_NAME }, async ($, e, next) => ({
+    ...(await next(e)),
+    isDeferred: false,
+  }))
+
   // Mirrors of the model's own task lists, matched to steps by title.
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const ran = await next(e)
     const plan = await read($, planAtom)
     if (plan === null || ran.deny !== undefined || ran.isError === true) return ran
-    await mark(
-      $,
-      e.todos.flatMap(todo => {
-        const step = stepFor(plan, todo.content)
-        return step ? [{ n: step.n, status: todo.status }] : []
-      })
-    )
+    const matched = e.todos.map(todo => ({ todo, step: stepFor(plan, todo.content) }))
+    await mark($, matched.flatMap(({ todo, step }) => (step ? [{ n: step.n, status: todo.status }] : [])))
+    // An item under way that is no step is what the model is doing off the plan.
+    if (e.agentId === undefined) {
+      const off = matched.find(({ todo, step }) => step === undefined && todo.status === 'in_progress')
+      await update($, asideAtom, aside => todoAside(aside, off && cleanTitle(off.todo.content)))
+    }
     return ran
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
     const ran = await next(e)
-    const plan = await read($, planAtom)
+    const plan = (await currentPlan($))?.plan ?? null
     if (plan === null || ran.deny !== undefined || ran.isError === true) return ran
     const step = stepFor(plan, e.subject)
     const id = ran.result.task.id
@@ -362,6 +532,7 @@ export const register: Register = on => {
       const plan = await read($, planAtom)
       if (plan === null) return { text: 'No plan was being tracked.' }
       await update($, planAtom, () => null)
+      await update($, asideAtom, () => null)
       // Leave a newer plan that another session approved in this project.
       const stored = await storedPlan($, plan.root)
       if (stored !== null && stored.approvedAt <= plan.approvedAt) {
@@ -378,7 +549,7 @@ export const register: Register = on => {
     }
 
     await openPane($)
-    const plan = await read($, planAtom)
+    const plan = (await currentPlan($))?.plan ?? null
     if (plan === null) {
       return { text: 'No approved plan yet. Approve one in plan mode and its steps show up here.' }
     }
@@ -401,11 +572,13 @@ export const register: Register = on => {
     return closed
   }).catch(($, e, next) => next(e))
 
-  // The first turn after the plan's finish quiets the band. turn.start only
-  // observes: the mod never sees a prompt it could change.
+  // The first turn after the plan's finish quiets the band, and any turn ends
+  // what the model was doing off the plan. turn.start only observes: the mod
+  // never sees a prompt it could change.
   on('turn.start', async ($, e, next) => {
     const plan = await read($, planAtom)
     if (plan !== null && isDone(plan)) await update($, doneSeenAtom, () => true)
+    await update($, asideAtom, () => null)
     return next(e)
   })
 
@@ -464,6 +637,11 @@ export const register: Register = on => {
       const after = plan.steps.find(one => one.n > step.n && !isClosed(one.status))
       const barWidth = Math.max(8, Math.min(20, Math.floor(width / 6)))
       const filled = Math.round((doneCount(plan) / Math.max(1, total)) * barWidth)
+      // What the model is doing off the plan takes the Next row's place.
+      let under: { label: string; mark: string; text: string } | undefined
+      const aside = await read($, asideAtom)
+      if (aside !== null) under = { label: 'Aside', mark: '↳ ', text: aside.text }
+      else if (after !== undefined) under = { label: 'Next', mark: '  ', text: `${after.n}. ${after.title}` }
       rows = (
         <Box flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between" columnGap={3}>
@@ -491,12 +669,14 @@ export const register: Register = on => {
               <Text bold wrap="truncate-end">{`${step.n}. ${step.title}`}</Text>
             </Box>
           </Box>
-          {after !== undefined && (
+          {under !== undefined && (
             <Box flexDirection="row">
-              {label('Next')}
-              <Text>{'  '}</Text>
+              {label(under.label)}
+              <Text dimColor>{under.mark}</Text>
               <Box flexShrink={1}>
-                <Text dimColor wrap="truncate-end">{`${after.n}. ${after.title}`}</Text>
+                <Text dimColor wrap="truncate-end">
+                  {under.text}
+                </Text>
               </Box>
             </Box>
           )}
@@ -552,6 +732,35 @@ export const register: Register = on => {
     return <Box />
   })
 
+  // Each amend_plan call too: `+ plan 2/6 · Add rate limiting`, `✎ plan 2/6 ·
+  // Use Redis for the cache`, or `↳ Fixing the import cycle` for an aside.
+  on('ui.render', { component: 'ToolUse', props: { tool: AMEND_NAME } }, async ($, e, next) => {
+    const { action, title } = (e.props.input ?? {}) as { action?: unknown; title?: unknown }
+    if (e.props.isErrored || e.props.isInterrupted || !isAction(action)) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const text = typeof title === 'string' ? cleanTitle(title) : ''
+    const parsed = typeof e.props.output === 'string' ? readUpdateResult(e.props.output) : undefined
+    let line
+    if (action === 'aside') line = text === '' ? 'back to the steps' : text
+    else line = parsed === undefined ? `plan · ${text}` : `plan ${parsed.count} · ${parsed.title}`
+    return (
+      <Box flexDirection="row">
+        <Text color={action === 'aside' ? 'subtle' : 'planMode'}>{`${AMEND_ICON[action]} `}</Text>
+        <Box flexShrink={1}>
+          <Text dimColor wrap="truncate-end">
+            {line}
+          </Text>
+        </Box>
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'ToolResult', props: { tool: AMEND_NAME } }, async ($, e, next) => {
+    if (e.props.isErrored) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const plan = await read($, planAtom)
@@ -569,6 +778,8 @@ export const register: Register = on => {
     const total = plan.steps.length
     const done = doneCount(plan)
     const isFinished = done === total
+    const current = currentStep(plan)
+    const aside = await read($, asideAtom)
     const count = ` ${done}/${total}`
     const barWidth = Math.max(4, Math.min(30, e.props.bodyColumns - count.length))
     const filled = Math.round((done / Math.max(1, total)) * barWidth)
@@ -592,19 +803,28 @@ export const register: Register = on => {
         </Box>
         {start > 0 && <Text dimColor>{`  ↑ ${start} more done`}</Text>}
         {shown.map(step => (
-          <Box flexDirection="row">
-            <Text color={ICON_COLOR[step.status]}>{`${ICON[step.status]} `}</Text>
-            <Text
-              wrap="truncate-end"
-              bold={step.status === 'in_progress'}
-              dimColor={isClosed(step.status)}
-              strikethrough={step.status === 'skipped'}
-            >
-              {`${step.n}. ${step.title}`}
-            </Text>
+          <Box flexDirection="column">
+            <Box flexDirection="row">
+              <Text color={ICON_COLOR[step.status]}>{`${ICON[step.status]} `}</Text>
+              <Text
+                wrap="truncate-end"
+                bold={step.status === 'in_progress'}
+                dimColor={isClosed(step.status)}
+                strikethrough={step.status === 'skipped'}
+              >
+                {`${step.n}. ${step.title}${step.isAdded === true ? ' +' : ''}`}
+              </Text>
+            </Box>
+            {/* What the model is doing off the plan sits under the step it left. */}
+            {aside !== null && step.n === current?.n && (
+              <Text dimColor wrap="truncate-end">
+                {`  ↳ ${aside.text}`}
+              </Text>
+            )}
           </Box>
         ))}
         {below > 0 && <Text dimColor>{`  ↓ ${below} more`}</Text>}
+        {plan.revisedFrom !== undefined && <Text dimColor>(revised from an earlier approval)</Text>}
         {plan.splitBy === 'parser' && (
           <Text dimColor>(split from the plan's own list: the model call failed)</Text>
         )}
