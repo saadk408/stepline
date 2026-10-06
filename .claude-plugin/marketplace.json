@@ -1,0 +1,16 @@
+{
+  "name": "saadk408",
+  "description": "Claude Code plugins by Saad Khan",
+  "owner": {
+    "name": "Saad Khan",
+    "url": "https://github.com/saadk408"
+  },
+  "plugins": [
+    {
+      "name": "plan-progress",
+      "source": "./",
+      "description": "Turns a plan you approve in plan mode into a live checklist above the prompt that checks off each step as Claude completes it",
+      "category": "productivity"
+    }
+  ]
+}

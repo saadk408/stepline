@@ -5,7 +5,9 @@ Each release raises `version` in `.claude-plugin/plugin.json`. Claude Code offer
 ## 1.0.1
 
 - **A sturdier start after `/clear`, `/resume` and `/branch`.** When the saved plan can't be read there, the hook that restores it hands the session start back to Claude Code, like every other hook in the plugin, instead of being skipped as a failure.
-- **A description and an author** in `.claude-plugin/plugin.json`, so `claude plugin validate` passes without warnings.
+- **Installable from GitHub.** The repository is its own marketplace: `/plugin marketplace add saadk408/plan-progress`, then `/plugin install plan-progress@saadk408`.
+- **A fuller manifest.** `.claude-plugin/plugin.json` has a display name, description, author, homepage, repository, license and keywords, so `claude plugin validate --strict` passes, and CI runs it that way.
+- **MIT licensed.**
 
 ## 1.0.0
 

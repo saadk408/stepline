@@ -31,7 +31,18 @@ Claude Code v2.1.290 or later, in the terminal or the Desktop app's Code tab. Th
 
 ## Install
 
-Clone the repository, then point Claude Code at the folder:
+In Claude Code, add this repository as a marketplace, then install the plugin from it:
+
+```text
+/plugin marketplace add saadk408/plan-progress
+/plugin install plan-progress@saadk408
+```
+
+Claude Code offers an update each time a release raises the plugin's version.
+
+### From a clone
+
+To work on the plugin, clone the repository, then point Claude Code at the folder:
 
 ```bash
 git clone https://github.com/saadk408/plan-progress.git
@@ -101,4 +112,4 @@ Claude Code writes the API's type declarations to `.claude-plugin/types/` each t
 
 ## License
 
-No license has been chosen yet.
+MIT. See [LICENSE](LICENSE).

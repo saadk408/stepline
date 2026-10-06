@@ -1,7 +1,15 @@
 {
   "name": "plan-progress",
+  "displayName": "Plan Progress",
   "version": "1.0.1",
-  "description": "Turns the plan you approve in plan mode into a live checklist above the prompt, checked off as Claude works.",
-  "author": { "name": "Saad Khan" },
+  "description": "Turns a plan you approve in plan mode into a live checklist above the prompt that checks off each step as Claude completes it",
+  "author": {
+    "name": "Saad Khan",
+    "url": "https://github.com/saadk408"
+  },
+  "homepage": "https://github.com/saadk408/plan-progress",
+  "repository": "https://github.com/saadk408/plan-progress",
+  "license": "MIT",
+  "keywords": ["plan-mode", "checklist", "progress", "tasks"],
   "types": "./types/index.d.ts"
 }
