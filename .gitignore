@@ -1,0 +1,4 @@
+.DS_Store
+node_modules/
+# Written by Claude Code at each load; it ignores itself too.
+.claude-plugin/types/
